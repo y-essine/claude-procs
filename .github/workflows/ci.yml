@@ -8,11 +8,12 @@ jobs:
         os: [ubuntu-latest, macos-latest]
         python: ["3.9", "3.12", "3.13"]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - run: uvx ruff check src tests
-      - run: uvx --python ${{ matrix.python }} --with pytest pytest -q --import-mode=importlib -o pythonpath=src
+      - run: uvx --python ${{ matrix.python }} --with pytest --with pytest-timeout pytest -q --timeout 60 --import-mode=importlib -o pythonpath=src
   plugin:
     runs-on: ubuntu-latest
     steps:

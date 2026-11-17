@@ -14,14 +14,26 @@ BUSY = "import time\nt = time.time()\nwhile time.time() - t < 4: pass\n"
 @pytest.fixture
 def session(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_PROCS_STATE", str(tmp_path / "state"))
-    sleep = shutil.which("sleep")
+    # a process whose comm and argv[0] are "claude". Not a copy of `sleep`: multi-call coreutils
+    # (uutils on Ubuntu 26.04) pick the applet from argv[0] and exit.
     fake = tmp_path / "claude"
-    shutil.copy(sleep, fake)  # comm and argv[0] are "claude"
+    cmd = None
+    cc = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
+    if cc:
+        src = tmp_path / "fake.c"
+        src.write_text("#include <unistd.h>\nint main(void) { sleep(30); return 0; }\n")
+        if subprocess.run([cc, "-o", str(fake), str(src)], capture_output=True).returncode == 0:
+            cmd = [str(fake)]
+    if cmd is None and sys.platform.startswith("linux"):
+        fake.symlink_to(sys.executable)  # Linux names the process after the exec'd path
+        cmd = [str(fake), "-c", "import time; time.sleep(30)"]
+    if cmd is None:
+        pytest.skip("no C compiler to build a fake claude binary")
     cfg = tmp_path / ".claude-test"
     (cfg / "sessions").mkdir(parents=True)
     env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE_")}
     env["CLAUDE_CONFIG_DIR"] = str(cfg)
-    claude = subprocess.Popen([str(fake), "30"], env=env)
+    claude = subprocess.Popen(cmd, env=env)
     child_env = dict(env, CLAUDE_PID=str(claude.pid))
     busy = subprocess.Popen([sys.executable, "-c", BUSY], env=child_env)
     yield claude, busy
