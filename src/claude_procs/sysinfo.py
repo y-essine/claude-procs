@@ -152,13 +152,10 @@ else:
 
     _ENV_C = dict(os.environ, LC_ALL="C")
     _PS_FIELDS = "pid=,ppid=,rss=,time=,lstart=,comm="
-    _table = {"t": 0.0, "procs": {}}
 
     def all_procs():
         r = subprocess.run(["ps", "-axo", _PS_FIELDS], capture_output=True, text=True, env=_ENV_C)
-        procs = _parse_ps(r.stdout)
-        _table.update(t=time.time(), procs=procs)
-        return procs
+        return _parse_ps(r.stdout)
 
     def proc_stat(pid):
         r = subprocess.run(["ps", "-o", _PS_FIELDS, "-p", str(pid)], capture_output=True, text=True, env=_ENV_C)
@@ -216,8 +213,8 @@ else:
                 return line[1:]
         return None
 
-    def children_of(pid):
-        procs = _table["procs"] if time.time() - _table["t"] < 2 else all_procs()
+    def children_of(pid, procs=None):
+        procs = procs if procs is not None else all_procs()  # always fresh: a stale table misses new children
         return [p for p, row in procs.items() if row[1] == pid]
 
     def started_epoch(start):
@@ -247,9 +244,10 @@ else:
 
 
 def descendants(pid):
+    procs = None if LINUX else all_procs()  # macOS: one `ps` for the whole tree
     out, stack = [], [pid]
     while stack:
         p = stack.pop()
         out.append(p)
-        stack += children_of(p)
+        stack += children_of(p) if LINUX else children_of(p, procs)
     return out
