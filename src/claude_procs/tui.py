@@ -229,7 +229,7 @@ class App:
             "Live": "↑↓ move · ⏎ expand · x stop · a all · space pause",
             "History": "↑↓ move · t window · g group by",
             "Machine": "",
-            "Status": "",
+            "Status": "t terminal titles on/off",
         }[TABS[self.tab]]
         foot = f"←→ tabs · {hints + ' · ' if hints else ''}q quit"
         if self.confirm:
@@ -521,6 +521,11 @@ class App:
             self.refresh(force=True)
         elif t == "Live":
             self.key_live(ch)
+        elif t == "Status" and ch == ord("t") and not self.src.demo:
+            from .core import CONFIG, set_config
+            on = set_config("terminal_titles", not CONFIG.get("terminal_titles"))
+            self.flash(f"terminal titles {'on: sessions take their task name on their next message' if on else 'off'}")
+            self.refresh(force=True)
         elif t == "History":
             if ch == ord("t"):
                 self.window = (self.window + 1) % len(WINDOWS)

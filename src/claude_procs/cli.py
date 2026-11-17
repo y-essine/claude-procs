@@ -55,6 +55,8 @@ def main(argv=None):
     d.add_argument("-i", "--interval", type=float, default=None)
     hk = sp.add_parser("hook", help="Claude Code hook entry point (reads the hook JSON on stdin)")
     hk.add_argument("--ensure-daemon", action="store_true", help="start the sampler if it is not running (plugin mode)")
+    ti = sp.add_parser("titles", help="name each session (terminal title, prompt box) after its current task")
+    ti.add_argument("state", nargs="?", choices=["on", "off"])
     sl = sp.add_parser("statusline", help="a segment for Claude Code's status line: this session's CPU and memory")
     sl.add_argument("--label", default="⚙ ", help="text before the numbers (default '⚙ ')")
     sl.add_argument("--no-color", action="store_true")
@@ -78,7 +80,7 @@ def main(argv=None):
         a.interval = core.CONFIG["interval"]
     return {
         "top": core.cmd_top, "who": core.cmd_who, "report": core.cmd_report, "adopt": core.cmd_adopt,
-        "daemon": core.cmd_daemon, "status": install.cmd_status, "install": install.cmd_install,
+        "daemon": core.cmd_daemon, "status": install.cmd_status, "titles": core.cmd_titles, "install": install.cmd_install,
         "uninstall": install.cmd_uninstall,
     }[a.cmd](a)
 

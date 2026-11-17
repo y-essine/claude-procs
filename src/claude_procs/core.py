@@ -36,6 +36,7 @@ DEFAULT_CONFIG = {
     "claude_bin": None,       # path to the claude CLI (default: found on PATH)
     "aliases": {},            # account -> how you launch it, e.g. {"personal": "claudep"}
     "retain_days": 60,
+    "terminal_titles": False,  # hand each session's task name to Claude Code as its title (terminal tab/window)
 }
 
 
@@ -46,6 +47,11 @@ def load_config():
             cfg.update(json.load(f))
     except (OSError, ValueError):
         pass
+    t = os.environ.get("CLAUDE_PROCS_TITLES", "").lower()   # per-process override (one terminal, tests)
+    if t in ("1", "on", "true"):
+        cfg["terminal_titles"] = True
+    elif t in ("0", "off", "false"):
+        cfg["terminal_titles"] = False
     return cfg
 
 
@@ -173,6 +179,8 @@ def db():
         minute INTEGER, acct TEXT, claude_pid INTEGER, cpu_s REAL, mem_mb REAL);
     CREATE TABLE IF NOT EXISTS names(
         kind TEXT, key TEXT, title TEXT, ts REAL, PRIMARY KEY(kind, key));
+    CREATE TABLE IF NOT EXISTS titles(
+        session_id TEXT PRIMARY KEY, applied TEXT, user_renamed INTEGER DEFAULT 0, ts REAL);
     """)
     return c
 
@@ -223,6 +231,13 @@ class TranscriptTitles:
 
     def __init__(self):
         self.paths, self.state = {}, {}   # sid -> path ; path -> [offset, custom, ai]
+
+    def get_path(self, path):
+        if not path or not os.path.exists(path):
+            return None, None
+        sid = os.path.basename(path)[:-6]
+        self.paths[sid] = path
+        return self.get(None, sid)
 
     def get(self, acct, sid):
         if not sid:
@@ -462,6 +477,72 @@ def ensure_daemon():
     return "started (detached)"
 
 
+# ---------------------------------------------------------------- terminal titles
+
+def latest_task_name(c, cpid):
+    r = c.execute("SELECT n.title FROM names n JOIN events e ON n.kind='task' AND n.key=CAST(e.id AS TEXT) "
+                  "WHERE e.claude_pid=? ORDER BY e.id DESC LIMIT 1", (cpid,)).fetchone()
+    return r[0] if r else None
+
+
+def title_for(c, data, pid, ev):
+    """The sessionTitle to hand back to Claude Code, or None. Never overrides a title you set yourself
+    with /rename: once the current title is neither ours nor Claude's own, the session is left alone."""
+    sid = data.get("session_id")
+    if not (sid and pid):
+        return None
+    row = c.execute("SELECT applied, user_renamed FROM titles WHERE session_id=?", (sid,)).fetchone()
+    applied, renamed = row if row else (None, 0)
+    if renamed:
+        return None
+    current = data.get("session_title")
+    if current is None or not applied:
+        custom, ai = TranscriptTitles().get_path(data.get("transcript_path"))
+        if current is None:
+            current = custom or ai
+        if not applied and custom and custom != ai and current == custom:
+            renamed = 1  # a /rename from before titles were on
+    elif current and current != applied:
+        renamed = 1      # renamed since we last set it
+    if renamed:
+        c.execute("INSERT OR REPLACE INTO titles VALUES(?,?,1,?)", (sid, applied, time.time()))
+        c.commit()
+        return None
+    name = latest_task_name(c, pid)
+    if not name or name == current:
+        return None
+    c.execute("INSERT OR REPLACE INTO titles VALUES(?,?,0,?)", (sid, name, time.time()))
+    c.commit()
+    return name
+
+
+def set_config(key, value):
+    """update one key of the config file (hooks read it on every run, so it applies at once)"""
+    cfg = {}
+    try:
+        with open(CONFIG_PATH) as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        pass
+    if value is not None:
+        cfg[key] = value
+        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+        with open(CONFIG_PATH, "w") as f:
+            json.dump(cfg, f, indent=2)
+            f.write("\n")
+        CONFIG[key] = value
+    return cfg.get(key, DEFAULT_CONFIG.get(key))
+
+
+def cmd_titles(a):
+    """claude-procs titles [on|off]"""
+    on = set_config("terminal_titles", None if a.state is None else a.state == "on")
+    print(f"terminal titles: {'on' if on else 'off'}")
+    if on:
+        print("  each session's title (terminal title, prompt box, /resume) follows its current task; it updates\n"
+              "  on your next message once the task has a name. A /rename of yours is never overridden.")
+
+
 # ---------------------------------------------------------------- hook
 
 def cmd_hook(a):
@@ -494,6 +575,10 @@ def cmd_hook(a):
         c.execute("INSERT INTO events(ts,kind,acct,claude_pid,session_id,cwd,project,text) VALUES(?,?,?,?,?,?,?,?)",
                   (time.time(), kind, acct, pid, data.get("session_id"), cwd, project_of(cwd), text))
         c.commit()
+        if CONFIG.get("terminal_titles"):
+            title = title_for(c, data, pid, ev)
+            if title:
+                print(json.dumps({"hookSpecificOutput": {"hookEventName": ev, "sessionTitle": title}}))
         if ev == "SessionStart" and getattr(a, "ensure_daemon", False):
             ensure_daemon()
     except Exception as e:

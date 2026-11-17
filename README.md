@@ -83,6 +83,20 @@ claude-procs report --since 7d --by project   # history
 claude-procs status                           # health check
 ```
 
+### Name your terminals after their tasks
+
+With several Claude Code terminals open, their titles (`✳ Abaddon removal…`) come from the first
+message and go stale. Turn on task titles and each session's title follows what it is doing now:
+
+```sh
+claude-procs titles on      # or /cprocs:titles on in Claude Code, or `t` on the Status tab
+```
+
+The title is handed to Claude Code through its hook API (`sessionTitle`), so Claude keeps drawing it:
+in the terminal tab or window title (great with tiling window managers and bars), the prompt box and
+`/resume`. It updates on a session's next message once the task has a name, and a title you set with
+`/rename` is never overridden.
+
 ### In Claude Code's status line
 
 `claude-procs statusline` prints this session's CPU, memory and heaviest command, for example
@@ -131,7 +145,8 @@ that session's own account, as Claude Code itself does. Turn them off with `"nam
   "names_per_hour": 60,
   "claude_bin": null,
   "aliases": {"personal": "claudep", "work": "claudew"},
-  "retain_days": 60
+  "retain_days": 60,
+  "terminal_titles": false
 }
 ```
 

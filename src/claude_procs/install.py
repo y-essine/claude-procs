@@ -315,6 +315,8 @@ def status():
     size = os.path.getsize(DB) / 2**20 if os.path.exists(DB) else 0
     names.append((None, "database", f"{DB.replace(HOME, '~')}  {size:.1f} MB  {rows} rows"
                   + (f"  since {time.strftime('%Y-%m-%d %H:%M', time.localtime(first))}" if first else "")))
+    names.append((None, "terminal titles", ("on: sessions are titled after their task" if CONFIG.get("terminal_titles")
+                                            else "off  (claude-procs titles on)")))
     names.append((None, "config", CONFIG_PATH.replace(HOME, "~") + ("" if os.path.exists(CONFIG_PATH) else "  (defaults)")))
     names.append((None, "version", __version__))
     sections.append(("Data", names))

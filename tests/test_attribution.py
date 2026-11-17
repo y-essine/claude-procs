@@ -67,7 +67,7 @@ def test_argv_and_env_of_a_process(session):
     from claude_procs import sysinfo
     claude, busy = session
     time.sleep(0.2)
-    assert sysinfo.proc_argv(busy.pid)[:2] == [sys.executable, "-c"] or \
-        os.path.basename(sysinfo.proc_argv(busy.pid)[0]).startswith("python")
+    argv = sysinfo.proc_argv(busy.pid)
+    assert argv[1:2] == ["-c"] and "python" in argv[0].lower(), argv  # framework Pythons re-exec as .../Python
     assert sysinfo.proc_env(busy.pid).get("CLAUDE_PID") == str(claude.pid)
     assert busy.pid in sysinfo.children_of(os.getpid())
