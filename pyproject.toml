@@ -5,16 +5,19 @@ build-backend = "hatchling.build"
 [project]
 name = "claude-procs"
 dynamic = ["version"]
-description = "See which Claude Code session and task is using your CPU and RAM (Linux, cgroups, live TUI)"
+description = "See which Claude Code session and task is using your CPU and RAM (Linux cgroups, macOS, live TUI)"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 authors = [{ name = "y-essine" }]
-keywords = ["claude", "claude-code", "cgroups", "systemd", "monitoring", "tui", "htop"]
+keywords = ["claude", "claude-code", "cpu", "memory", "processes", "cgroups", "systemd", "monitoring", "tui", "htop", "statusline"]
 classifiers = [
   "Environment :: Console :: Curses",
   "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
   "Programming Language :: Python :: 3",
   "Topic :: System :: Monitoring",
 ]
@@ -36,7 +39,7 @@ packages = ["src/claude_procs"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "B", "UP"]

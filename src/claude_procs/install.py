@@ -9,10 +9,13 @@ import sys
 import time
 
 from . import __version__
+from .sysinfo import LINUX, MAC
 from .core import (CG_CLAUDE, CONFIG, CONFIG_PATH, DB, DEFAULT_CONFIG, HOME, STATE, account_of, cmd_adopt,
                    live_sessions, scope_cgroup)
 
 UNIT = "claude-procs.service"
+LAUNCHD_LABEL = "io.github.y-essine.claude-procs"
+PLIST_PATH = os.path.join(HOME, "Library", "LaunchAgents", LAUNCHD_LABEL + ".plist")
 UNIT_PATH = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, ".config")), "systemd", "user", UNIT)
 EVENTS = ("SessionStart", "UserPromptSubmit")
 BACKUP_SUFFIX = ".bak-claude-procs"
@@ -27,6 +30,11 @@ def exe_path():
     if os.path.basename(argv0).startswith("claude-procs") or os.path.basename(argv0) == "cprocs":
         return argv0
     return f"{sys.executable} -m claude_procs"
+
+
+def ephemeral(path):
+    """npx / uvx / pipx-run paths vanish: hooks must point at an installed command"""
+    return any(x in path for x in ("/_npx/", "/uv/cache/", "/.cache/uv/", "/archive-v0/", "/pipx/.cache/"))
 
 
 def hook_command():
@@ -138,6 +146,53 @@ WantedBy=default.target
 """)
 
 
+def write_plist():
+    import plistlib
+    os.makedirs(os.path.dirname(PLIST_PATH), exist_ok=True)
+    claude = shutil.which("claude")
+    path = os.pathsep.join(dict.fromkeys(filter(None, [os.path.dirname(claude) if claude else None,
+                                                      "/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin"])))
+    with open(PLIST_PATH, "wb") as f:
+        plistlib.dump({"Label": LAUNCHD_LABEL, "ProgramArguments": [*exe_path().split(), "daemon"],
+                       "RunAtLoad": True, "KeepAlive": True, "ProcessType": "Background", "Nice": 10,
+                       "EnvironmentVariables": {"PATH": path},
+                       "StandardErrorPath": os.path.join(STATE, "daemon.log")}, f)
+
+
+def launchctl(*args):
+    return subprocess.run(["launchctl", *args], capture_output=True, text=True)
+
+
+def start_service():
+    if LINUX:
+        write_unit()
+        systemctl("daemon-reload")
+        systemctl("enable", "--now", UNIT)
+        systemctl("restart", UNIT)
+        return UNIT_PATH, systemctl("is-active", UNIT).stdout.strip()
+    write_plist()
+    os.makedirs(STATE, exist_ok=True)
+    domain = f"gui/{os.getuid()}"
+    launchctl("bootout", f"{domain}/{LAUNCHD_LABEL}")
+    r = launchctl("bootstrap", domain, PLIST_PATH)
+    return PLIST_PATH, "loaded" if r.returncode == 0 else r.stderr.strip()
+
+
+def stop_service():
+    if LINUX:
+        systemctl("disable", "--now", UNIT)
+        path = UNIT_PATH
+    else:
+        launchctl("bootout", f"gui/{os.getuid()}/{LAUNCHD_LABEL}")
+        path = PLIST_PATH
+    if os.path.exists(path):
+        os.remove(path)
+        if LINUX:
+            systemctl("daemon-reload")
+        return path
+    return None
+
+
 def write_config(aliases):
     cfg = dict(DEFAULT_CONFIG)
     cfg.update(_load(CONFIG_PATH))
@@ -154,12 +209,19 @@ def write_config(aliases):
 def requirements():
     """-> [(ok, label, detail)]"""
     out = []
-    cg2 = os.path.exists("/sys/fs/cgroup/cgroup.controllers")
-    out.append((cg2, "cgroup v2", "unified hierarchy" if cg2 else "needs the cgroup v2 unified hierarchy"))
-    r = systemctl("is-system-running")
-    ok = r.stdout.strip() in ("running", "degraded")
-    out.append((ok, "systemd --user", r.stdout.strip() or r.stderr.strip()))
-    out.append((bool(shutil.which("busctl")), "busctl", shutil.which("busctl") or "not found (systemd)"))
+    if LINUX:
+        cg2 = os.path.exists("/sys/fs/cgroup/cgroup.controllers")
+        out.append((cg2, "cgroup v2", "unified hierarchy" if cg2 else "needs the cgroup v2 unified hierarchy"))
+        r = systemctl("is-system-running")
+        ok = r.stdout.strip() in ("running", "degraded")
+        out.append((ok, "systemd --user", r.stdout.strip() or r.stderr.strip()))
+        out.append((bool(shutil.which("busctl")), "busctl", shutil.which("busctl") or "not found (systemd)"))
+    elif MAC:
+        out.append((True, "macOS", "process tree + environment attribution (no cgroups: processes that start "
+                    "and exit between two samples are not counted)"))
+        out.append((bool(shutil.which("launchctl")), "launchd", shutil.which("launchctl") or "not found"))
+    else:
+        out.append((False, sys.platform, "only Linux and macOS are supported"))
     claude = CONFIG.get("claude_bin") or shutil.which("claude")
     out.append((bool(claude), "claude CLI", claude or "not found: task names will be off"))
     return out
@@ -171,7 +233,10 @@ def cmd_install(a):
     for ok, label, detail in reqs:
         print(f"  {'✓' if ok else '✗'} {label:15} {detail}")
     if not all(ok for ok, label, _ in reqs if label != "claude CLI"):
-        sys.exit("\nmissing requirements: claude-procs needs Linux with systemd and cgroup v2")
+        sys.exit("\nmissing requirements: claude-procs needs Linux (systemd, cgroup v2) or macOS")
+    if ephemeral(exe_path()):
+        sys.exit(f"\n{exe_path()} is a temporary npx/uvx copy: install it for good first\n"
+                 "  uv tool install claude-procs   or   pipx install claude-procs   or   npm i -g claude-procs")
     aliases = dict(x.split("=", 1) for x in (a.alias or []))
     cfg = write_config(aliases)
     dirs = config_dirs(a.config_dir)
@@ -182,11 +247,8 @@ def cmd_install(a):
         add_hooks(d)
         print(f"  ✓ {d.replace(HOME, '~')}/settings.json   account: {account_of(d)}"
               f"{'  (backup: settings.json' + BACKUP_SUFFIX + ')' if os.path.exists(os.path.join(d, 'settings.json' + BACKUP_SUFFIX)) else ''}")
-    write_unit()
-    systemctl("daemon-reload")
-    systemctl("enable", "--now", UNIT)
-    systemctl("restart", UNIT)
-    print(f"\nservice: {UNIT_PATH.replace(HOME, '~')}  ({systemctl('is-active', UNIT).stdout.strip()})")
+    path, state = start_service()
+    print(f"\nservice: {path.replace(HOME, '~')}  ({state})")
     print(f"config:  {CONFIG_PATH.replace(HOME, '~')}  (task names: {'on, ' + cfg['names_model'] if cfg['names'] else 'off'})")
     print("\nrunning sessions:")
     cmd_adopt(None)
@@ -197,11 +259,9 @@ def cmd_uninstall(a):
     for d in config_dirs(a.config_dir):
         if remove_hooks(d):
             print(f"  removed hooks from {d.replace(HOME, '~')}/settings.json")
-    systemctl("disable", "--now", UNIT)
-    if os.path.exists(UNIT_PATH):
-        os.remove(UNIT_PATH)
-        systemctl("daemon-reload")
-        print(f"  removed {UNIT_PATH.replace(HOME, '~')}")
+    removed = stop_service()
+    if removed:
+        print(f"  removed {removed.replace(HOME, '~')}")
     if a.purge:
         shutil.rmtree(STATE, ignore_errors=True)
         if os.path.exists(CONFIG_PATH):
@@ -212,14 +272,19 @@ def cmd_uninstall(a):
 
 def status():
     """-> list of (section, [(ok|None, label, detail)])"""
+    from .core import daemon_running
     sections = [("Requirements", requirements())]
-    st = systemctl("show", UNIT, "-p", "ActiveState", "-p", "MainPID", "-p", "ActiveEnterTimestamp")
-    props = dict(line.split("=", 1) for line in st.stdout.splitlines() if "=" in line)
-    active = props.get("ActiveState") == "active"
-    since = props.get("ActiveEnterTimestamp", "")
-    sections.append(("Daemon", [
-        (active, UNIT, f"{props.get('ActiveState', '?')}  pid {props.get('MainPID', '?')}  since {since}" if active
-         else "not running: `claude-procs install` or `systemctl --user start claude-procs`")]))
+    running = daemon_running()
+    if LINUX and os.path.exists(UNIT_PATH):
+        st = systemctl("show", UNIT, "-p", "ActiveState", "-p", "MainPID", "-p", "ActiveEnterTimestamp")
+        props = dict(line.split("=", 1) for line in st.stdout.splitlines() if "=" in line)
+        detail = f"{props.get('ActiveState', '?')}  pid {props.get('MainPID', '?')}  since {props.get('ActiveEnterTimestamp', '')}"
+        sections.append(("Daemon", [(running, UNIT, detail)]))
+    elif MAC and os.path.exists(PLIST_PATH):
+        sections.append(("Daemon", [(running, LAUNCHD_LABEL, "running" if running else "loaded, not running")]))
+    else:
+        sections.append(("Daemon", [(running, "sampler", "running (started by the plugin)" if running
+                                     else "not running: `claude-procs install`, or start a session with the plugin")]))
     hooks = []
     for d in config_dirs():
         hs = hooks_state(d)

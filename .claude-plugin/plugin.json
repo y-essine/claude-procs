@@ -1,0 +1,11 @@
+{
+  "name": "cprocs",
+  "displayName": "claude-procs",
+  "version": "0.1.0",
+  "description": "See which Claude Code session and task is using your CPU and RAM: per-session cgroups, task names, a /status-style terminal view.",
+  "author": { "name": "y-essine", "url": "https://github.com/y-essine" },
+  "homepage": "https://github.com/y-essine/claude-procs",
+  "repository": "https://github.com/y-essine/claude-procs",
+  "license": "MIT",
+  "keywords": ["processes", "cpu", "memory", "monitoring", "cgroups", "htop"]
+}

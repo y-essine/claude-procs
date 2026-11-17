@@ -1,0 +1,16 @@
+# claude-procs
+
+> See which Claude Code session, and which task, is using your CPU and RAM. Linux (cgroups) and macOS.
+> Terminal view styled like Claude Code's /status, history per task/project/command, stop runaway commands.
+
+Answers questions like: "which Claude Code session started this node / rustc process?", "why is my
+machine slow while Claude Code runs?", "how much CPU does each Claude Code agent use?", "find leftover
+dev servers started by Claude Code", "per-session CPU and memory for Claude Code in the status line".
+
+- Install as a Claude Code plugin: `/plugin install cprocs --marketplace y-essine/claude-procs`
+- Or: `uv tool install claude-procs && claude-procs install` (also `pipx`, `npm i -g claude-procs`, AUR `claude-procs`)
+- Try without installing: `uvx claude-procs --demo`
+- Commands: `claude-procs` (interactive), `top --once`, `who PID`, `report --since 7d --by project`, `statusline`, `status`
+
+## Docs
+- [README](https://github.com/y-essine/claude-procs/blob/main/README.md): install, usage, how it works, privacy

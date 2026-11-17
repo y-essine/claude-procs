@@ -1,0 +1,31 @@
+# Maintainer: y-essine <https://github.com/y-essine>
+pkgname=claude-procs
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="See which Claude Code session and task is using your CPU and RAM (cgroups, live /status-style TUI)"
+arch=('any')
+url="https://github.com/y-essine/claude-procs"
+license=('MIT')
+depends=('python' 'systemd')
+makedepends=('python-build' 'python-installer' 'python-hatchling')
+checkdepends=('python-pytest')
+optdepends=('claude-code: task names (Haiku) and the hooks it runs')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "$pkgname-$pkgver"
+  python -m build --wheel --no-isolation
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  PYTHONPATH=src python -m pytest -q --import-mode=importlib tests/test_core.py tests/test_install.py
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  python -m installer --destdir="$pkgdir" dist/*.whl
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

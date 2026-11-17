@@ -1,0 +1,50 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: versions match the tag
+        run: python3 scripts/bump.py --check "${GITHUB_REF_NAME#v}"
+      - run: uv build
+      - uses: actions/upload-artifact@v4
+        with: { name: dist, path: dist/ }
+
+  pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions: { id-token: write }   # trusted publishing: no token stored anywhere
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: dist, path: dist/ }
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: dist, path: dist/ }
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --title "claude-procs $GITHUB_REF_NAME"
+        env: { GH_TOKEN: "${{ github.token }}" }
+
+  npm:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions: { id-token: write }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, registry-url: "https://registry.npmjs.org" }
+      - name: publish (skipped until an NPM_TOKEN secret exists)
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then echo "no NPM_TOKEN secret: skipping"; exit 0; fi
+          cd npm && npm publish --access public --provenance
+        env: { NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}" }

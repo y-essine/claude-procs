@@ -1,0 +1,15 @@
+{
+  "name": "cprocs",
+  "description": "claude-procs: see which Claude Code session and task is using your CPU and RAM.",
+  "owner": {
+    "name": "y-essine",
+    "url": "https://github.com/y-essine"
+  },
+  "plugins": [
+    {
+      "name": "cprocs",
+      "source": "./",
+      "description": "See which Claude Code session and task is using your CPU and RAM."
+    }
+  ]
+}

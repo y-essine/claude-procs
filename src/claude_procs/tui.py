@@ -24,16 +24,11 @@ class RealSource:
 
     def __init__(self):
         from .core import Live
+        from .sysinfo import machine
         self.lv = Live()
         self.ncpu = os.cpu_count() or 1
-        self._cpu_prev = self._read_cpu()
-
-    @staticmethod
-    def _read_cpu():
-        with open("/proc/stat") as f:
-            v = [int(x) for x in f.readline().split()[1:]]
-        idle = v[3] + (v[4] if len(v) > 4 else 0)
-        return sum(v[:8]), idle
+        self._machine = machine
+        _, self._mstate = machine()
 
     def snap(self):
         return self.lv.snap()
@@ -43,22 +38,12 @@ class RealSource:
         return report_rows(by, window, n=200, conn=self.lv.conn)
 
     def machine(self, snap):
-        tot, idle = self._read_cpu()
-        pt, pi = self._cpu_prev
-        self._cpu_prev = (tot, idle)
-        busy = 1 - (idle - pi) / max(1, tot - pt)
-        mem = {}
-        with open("/proc/meminfo") as f:
-            for line in f:
-                k, v = line.split(":", 1)
-                mem[k] = int(v.split()[0]) * 1024
-        with open("/proc/loadavg") as f:
-            load = f.read().split()[:3]
-        claude_rss = sum(se["rss"] for a in snap["accounts"] for se in a["sessions"])
-        return {"ncpu": self.ncpu, "busy": max(0.0, min(1.0, busy)), "load": load,
-                "mem_total": mem.get("MemTotal", 0), "mem_used": mem.get("MemTotal", 0) - mem.get("MemAvailable", 0),
-                "swap_total": mem.get("SwapTotal", 0), "swap_used": mem.get("SwapTotal", 0) - mem.get("SwapFree", 0),
-                "claude_rss": claude_rss}
+        m, self._mstate = self._machine(self._mstate)
+        if m["busy"] is None:  # macOS: estimate from the per-process samples
+            m["busy"] = max(0.0, min(1.0, snap["total_pct"] / (self.ncpu * 100)))
+        m["ncpu"] = self.ncpu
+        m["claude_rss"] = sum(se["rss"] for a in snap["accounts"] for se in a["sessions"])
+        return m
 
     def status(self):
         from .install import status
@@ -579,14 +564,19 @@ class App:
                 self.confirm = (f"Stop “{name}” ({len(pids)} root process{'es' if len(pids) != 1 else ''} and children)?",
                                 lambda: self.src.stop(pids))
 
-    def run(self):
+    def run(self, tour=None):
         curses.curs_set(0)
         self.scr.keypad(True)
-        self.scr.timeout(200)
+        self.scr.timeout(100 if tour else 200)
         self.refresh(force=True)
+        t0 = time.time()
         while True:
             self.draw()
             ch = self.scr.getch()
+            if tour and ch == -1 and tour[0][0] <= time.time() - t0:
+                ch = tour.pop(0)[1]
+                if ch is None:
+                    return
             if ch != -1:
                 if ch == curses.KEY_RESIZE:
                     continue
@@ -599,7 +589,13 @@ class App:
                 self.refresh()
 
 
-def main(demo=False, interval=2.0, start_tab=None):
+# scripted walk-through for recordings: (seconds, key)
+TOUR = [(2.5, curses.KEY_DOWN), (3.3, curses.KEY_DOWN), (4.1, curses.KEY_UP), (5.0, ord("x")), (6.5, ord("n")),
+        (7.3, curses.KEY_RIGHT), (8.8, ord("t")), (9.8, ord("g")), (11.3, curses.KEY_RIGHT),
+        (13.3, curses.KEY_RIGHT), (15.5, curses.KEY_RIGHT), (17.0, None)]
+
+
+def main(demo=False, interval=2.0, start_tab=None, tour=False):
     locale.setlocale(locale.LC_ALL, "")
     os.environ.setdefault("ESCDELAY", "25")
     if demo:
@@ -612,6 +608,6 @@ def main(demo=False, interval=2.0, start_tab=None):
         app = App(scr, source, interval)
         if start_tab:
             app.tab = [t.lower() for t in TABS].index(start_tab.lower())
-        app.run()
+        app.run(list(TOUR) if tour else None)
 
     curses.wrapper(_run)

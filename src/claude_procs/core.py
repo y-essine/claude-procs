@@ -53,8 +53,6 @@ CONFIG = load_config()
 DB = os.path.join(STATE, "usage.db")
 CG_USER = f"/sys/fs/cgroup/user.slice/user-{UID}.slice/user@{UID}.service"
 CG_CLAUDE = os.path.join(CG_USER, "claude.slice")
-TICK = os.sysconf("SC_CLK_TCK")
-PAGE = os.sysconf("SC_PAGE_SIZE")
 SCOPE_RE = re.compile(r"/cc-([a-z]+)-(\d+)\.scope")
 RETAIN_DAYS = CONFIG["retain_days"]
 
@@ -74,78 +72,33 @@ def config_dir_of(acct):
     return os.path.join(HOME, ".claude" if acct == "default" else f".claude-{acct}")
 
 
-def read(path, mode="r"):
-    try:
-        with open(path, mode) as f:
-            return f.read()
-    except OSError:
-        return None
+from .sysinfo import (LINUX, PAGE, TICK, all_procs, children_of, descendants, proc_argv,  # noqa: E402,F401
+                      proc_cgroup, proc_cwd, proc_env, proc_stat, read, started_epoch)
 
 
-def proc_stat(pid):
-    """-> (comm, ppid, own_ticks, children_ticks, starttime, rss_bytes) or None"""
-    s = read(f"/proc/{pid}/stat")
-    if not s:
-        return None
-    r = s.rfind(")")
-    comm = s[s.find("(") + 1:r]
-    f = s[r + 2:].split()
-    # fields after comm: state(0) ppid(1) ... utime(11) stime(12) cutime(13) cstime(14) ... starttime(19)
-    return comm, int(f[1]), int(f[11]) + int(f[12]), int(f[13]) + int(f[14]), int(f[19]), int(f[21]) * PAGE
+def known_config_dirs():
+    import glob
+    dirs = list(CONFIG.get("config_dirs") or [])
+    for d in [os.environ.get("CLAUDE_CONFIG_DIR"), os.path.join(HOME, ".claude"), *glob.glob(os.path.join(HOME, ".claude-*"))]:
+        if d and os.path.isdir(os.path.join(d, "sessions")) and d not in dirs:
+            dirs.append(d)
+    return dirs
 
 
-def proc_rss(pid):
-    s = read(f"/proc/{pid}/statm")
-    return int(s.split()[1]) * PAGE if s else 0
-
-
-def proc_cgroup(pid):
-    s = read(f"/proc/{pid}/cgroup")
-    return s.strip().split("::", 1)[-1] if s else ""
-
-
-def proc_env(pid):
-    s = read(f"/proc/{pid}/environ", "rb")
-    if not s:
-        return {}
-    env = {}
-    for kv in s.split(b"\0"):
-        if kv.startswith(b"CLAUDE_") and b"=" in kv:
-            k, v = kv.decode(errors="replace").split("=", 1)
-            env[k] = v
-    return env
-
-
-def proc_argv(pid):
-    s = read(f"/proc/{pid}/cmdline", "rb")
-    return [a.decode(errors="replace") for a in s.split(b"\0")[:-1]] if s else []
-
-
-def children_of(pid):
-    out = []
-    for t in os.listdir(f"/proc/{pid}/task") if os.path.isdir(f"/proc/{pid}/task") else []:
-        s = read(f"/proc/{pid}/task/{t}/children")
-        if s:
-            out += [int(x) for x in s.split()]
-    return out
-
-
-def descendants(pid):
-    out, stack = [], [pid]
-    while stack:
-        p = stack.pop()
-        out.append(p)
-        stack += children_of(p)
-    return out
-
-
-def is_claude(pid):
-    """a claude CLI process (not its embedded ugrep/rg helpers, which keep comm=claude)"""
-    st = proc_stat(pid)
-    if not st or st[0] != "claude":
-        return False
-    argv = proc_argv(pid)
-    return bool(argv) and os.path.basename(argv[0]) == "claude"
+def is_claude(pid, comm=None):
+    """a claude CLI process (not its embedded ugrep/rg helpers, which keep comm=claude). npm installs run
+    as `node`, so a live sessions/<pid>.json in a config dir also counts."""
+    if comm is None:
+        st = proc_stat(pid)
+        if not st:
+            return False
+        comm = st[0]
+    if comm == "claude":
+        argv = proc_argv(pid)
+        return bool(argv) and os.path.basename(argv[0]) == "claude"
+    if comm in ("node", "bun", "MainThread"):
+        return any(os.path.exists(os.path.join(d, "sessions", f"{pid}.json")) for d in known_config_dirs())
+    return False
 
 
 @functools.lru_cache(maxsize=256)
@@ -444,6 +397,8 @@ def scope_cgroup(pid):
 
 def move_to_scope(pid, acct):
     """Put a claude process tree into claude.slice/claude-<acct>.slice/cc-<acct>-<pid>.scope."""
+    if not LINUX:
+        return "no cgroups on this OS (attributed by process tree and environment)"
     if scope_cgroup(pid):
         return "already"
     pids = descendants(pid)
@@ -478,9 +433,38 @@ def find_claude_pid():
     return None
 
 
+# ---------------------------------------------------------------- daemon autostart (plugin mode)
+
+def ensure_daemon():
+    """Start the sampler if nothing runs it yet: the installed service if there is one, else a
+    transient one (systemd-run on Linux, a detached process elsewhere). Never inside the session's
+    cgroup and without CLAUDE_* variables, so it is not counted as Claude-induced."""
+    if daemon_running():
+        return "running"
+    env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE_") or k == "CLAUDE_PROCS_STATE"}
+    pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env["PYTHONPATH"] = pkg_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    cmd = [sys.executable, "-m", "claude_procs", "daemon"]
+    if LINUX:
+        unit = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, ".config")),
+                            "systemd", "user", "claude-procs.service")
+        if os.path.exists(unit):
+            subprocess.run(["systemctl", "--user", "start", "claude-procs.service"], capture_output=True, timeout=5)
+            return "started service"
+        r = subprocess.run(["systemd-run", "--user", "--unit=claude-procs-auto", "--collect", "--quiet",
+                            "-p", "Restart=on-failure", "-p", "Nice=10", "-p", "CPUWeight=20",
+                            f"--setenv=PYTHONPATH={env['PYTHONPATH']}", "--setenv=CLAUDE_PROCS_AUTOSTARTED=1", *cmd],
+                           capture_output=True, text=True, timeout=5, env=env)
+        if r.returncode == 0:
+            return "started (systemd-run)"
+    subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True, cwd=STATE if os.path.isdir(STATE) else HOME)
+    return "started (detached)"
+
+
 # ---------------------------------------------------------------- hook
 
-def cmd_hook(_):
+def cmd_hook(a):
     """Never prints (SessionStart/UserPromptSubmit stdout becomes model context), never fails."""
     if os.environ.get(NAMER_ENV):
         return
@@ -504,9 +488,14 @@ def cmd_hook(_):
         else:
             return
         c = db()
+        if c.execute("SELECT 1 FROM events WHERE claude_pid=? AND kind=? AND session_id IS ? AND ts>? AND "
+                     "(kind='session' OR text=?)", (pid, kind, data.get("session_id"), time.time() - 5, text)).fetchone():
+            return  # the same hook installed twice (plugin + settings.json)
         c.execute("INSERT INTO events(ts,kind,acct,claude_pid,session_id,cwd,project,text) VALUES(?,?,?,?,?,?,?,?)",
                   (time.time(), kind, acct, pid, data.get("session_id"), cwd, project_of(cwd), text))
         c.commit()
+        if ev == "SessionStart" and getattr(a, "ensure_daemon", False):
+            ensure_daemon()
     except Exception as e:
         try:
             os.makedirs(STATE, exist_ok=True)
@@ -591,7 +580,7 @@ class Sampler:
             cp = env.get("CLAUDE_PID", "")
             self.envcache[key] = (account_of(env.get("CLAUDE_CONFIG_DIR")), int(cp)) if cp.isdigit() else None
         o = self.envcache[key]
-        if o is None and comm == "claude" and is_claude(pid):
+        if o is None and comm in ("claude", "node", "bun", "MainThread") and is_claude(pid, comm):
             # a claude process has no CLAUDE_PID itself (only its children do): it owns itself
             env = proc_env(pid)
             if not env.get(NAMER_ENV):
@@ -601,15 +590,8 @@ class Sampler:
     def sample(self):
         now = time.time()
         dt = now - self.t if self.t else 0
-        cur, procs = {}, []
-        for d in os.listdir("/proc"):
-            if not d.isdigit():
-                continue
-            pid = int(d)
-            st = proc_stat(pid)
-            if not st:
-                continue
-            comm, ppid, own, ch, start, rss = st
+        cur = {}
+        for pid, (comm, ppid, own, ch, start, rss) in all_procs().items():
             cur[pid] = (start, own, ch, ppid, comm)
             self.rss[pid] = rss
         procs = cpu_deltas(self.prev, cur, self.first)
@@ -660,13 +642,19 @@ class Sampler:
         self.labelcache[key] = v
         return v
 
+    def app_label(self, pid, start, comm):
+        """macOS: "Google Chrome" from /Applications/Google Chrome.app/..., else the executable name"""
+        key = (pid, start)
+        if key not in self.labelcache:
+            argv = proc_argv(pid)
+            m = re.search(r"/([^/]+)\.app/", argv[0] if argv else "")
+            self.labelcache[key] = ("app", m.group(1) if m else comm, None)
+        return self.labelcache[key][1]
+
     @staticmethod
     def cwd_project(pid):
-        try:
-            cwd = os.readlink(f"/proc/{pid}/cwd")
-        except OSError:
-            return None
-        return None if cwd == HOME else project_of(cwd)
+        cwd = proc_cwd(pid)
+        return None if not cwd or cwd == HOME else project_of(cwd)
 
     def scope_totals(self):
         """cgroup truth per claude scope: {(acct,pid): (cpu_s_delta, mem_bytes)}"""
@@ -741,12 +729,37 @@ def attribute(sampler, tasks, cur, procs, want_other=True):
         elif want_other:
             if not (d_own or d_short or rss > 50 << 20):
                 continue
-            unit = unit_label(cg)
+            unit = unit_label(cg) if LINUX else sampler.app_label(pid, start, comm)
             add(("-", 0, "other", unit, comm, unit), d_own + d_short, rss)
     return rows
 
 
+def daemon_lock():
+    """one daemon per user: returns the held lock file, or None if another daemon runs"""
+    import fcntl
+    os.makedirs(STATE, exist_ok=True)
+    f = open(os.path.join(STATE, "daemon.lock"), "a+")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    return f
+
+
+def daemon_running():
+    lock = daemon_lock()
+    if lock:
+        lock.close()
+        return False
+    return True
+
+
 def cmd_daemon(a):
+    lock = daemon_lock()
+    if not lock:
+        print("claude-procs: another daemon is already running", file=sys.stderr)
+        return
     conn = db()
     tasks = Tasks(conn)
     tasks.refresh()
@@ -860,13 +873,13 @@ def ago(ts):
     return f"{s:.0f}s" if s < 90 else f"{s / 60:.0f}m" if s < 5400 else f"{s / 3600:.1f}h"
 
 
-def live_sessions():
+def live_sessions(procs=None):
     out = {}
-    for d in os.listdir("/proc"):
-        if d.isdigit() and is_claude(int(d)):
-            env = proc_env(int(d))
+    for pid, row in (procs or all_procs()).items():
+        if is_claude(pid, row[0]):
+            env = proc_env(pid)
             if not env.get(NAMER_ENV):
-                out[int(d)] = account_of(env.get("CLAUDE_CONFIG_DIR"))
+                out[pid] = account_of(env.get("CLAUDE_CONFIG_DIR"))
     return out
 
 
@@ -1021,6 +1034,83 @@ def cmd_top(a):
         pass
 
 
+# ---------------------------------------------------------------- statusline
+
+def session_pid(session_id):
+    """claude pid of a session id, from the sessions/<pid>.json files Claude Code keeps"""
+    for d in known_config_dirs():
+        for f in os.listdir(os.path.join(d, "sessions")):
+            if f.endswith(".json"):
+                try:
+                    with open(os.path.join(d, "sessions", f)) as fh:
+                        if json.load(fh).get("sessionId") == session_id:
+                            return int(f[:-5])
+                except (OSError, ValueError):
+                    pass
+    return None
+
+
+def session_usage(cpid):
+    """-> (cumulative cpu seconds, memory bytes) of a session: cgroup when it has one, else its process tree"""
+    cg = proc_cgroup(cpid) if LINUX else ""
+    if SCOPE_RE.search(cg):
+        base = "/sys/fs/cgroup" + cg
+        cs = read(base + "/cpu.stat") or ""
+        if cs.startswith("usage_usec"):
+            mem = int((read(base + "/memory.current") or "0").strip() or 0)
+            return int(cs.split()[1]) / 1e6, mem
+    cpu = mem = 0
+    for p in descendants(cpid):
+        st = proc_stat(p)
+        if st:
+            cpu += (st[2] + st[3]) / TICK
+            mem += st[5]
+    return cpu, mem
+
+
+def cmd_statusline(a):
+    """one status line segment for Claude Code: this session's CPU, memory and heaviest command"""
+    try:
+        data = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        data = {}
+    cpid = find_claude_pid() or (session_pid(data["session_id"]) if data.get("session_id") else None)
+    if not cpid:
+        return
+    cpu, mem = session_usage(cpid)
+    now = time.time()
+    cache = os.path.join(STATE, "statusline", f"{cpid}.json")
+    pct = None
+    try:
+        with open(cache) as f:
+            t0, c0 = json.load(f)
+        if 0.5 < now - t0 < 900:
+            pct = max(0.0, (cpu - c0) / (now - t0) * 100)
+    except (OSError, ValueError):
+        pass
+    os.makedirs(os.path.dirname(cache), exist_ok=True)
+    with open(cache, "w") as f:
+        json.dump([now, cpu], f)
+    heavy = None
+    try:
+        c = db()
+        r = c.execute("SELECT u.acct, u.label, sum(u.cpu_s) FROM usage u WHERE u.claude_pid=? AND u.minute>=? "
+                      "AND u.grp!='agent' GROUP BY u.label ORDER BY sum(u.cpu_s) DESC LIMIT 1",
+                      (cpid, int(now - 180))).fetchone()
+        if r and r[2] >= 20:
+            n = c.execute("SELECT title FROM names WHERE kind='cmd' AND key=?", (cmd_key(r[0], cpid, r[1]),)).fetchone()
+            heavy = n[0] if n else short(r[1], 40)
+    except sqlite3.Error:
+        pass
+    color = not a.no_color
+    acc, D, R = ("\033[38;5;173m", "\033[2m", "\033[0m") if color else ("", "", "")
+    out = f"{acc}{a.label}{pct:.0f}%{R}" if pct is not None else f"{acc}{a.label}{R}"
+    out += f" {D}{fmt_mem(mem).strip()}{R}"
+    if heavy:
+        out += f" {D}· {heavy}{R}"
+    print(out)
+
+
 # ---------------------------------------------------------------- who
 
 def cmd_who(a):
@@ -1036,7 +1126,7 @@ def cmd_who(a):
         cg = proc_cgroup(pid)
         o = s.owner(pid, start, cg, comm)
         if not o:
-            print(f"{pid} {comm}: not Claude-induced  (cgroup unit: {unit_label(cg)})")
+            print(f"{pid} {comm}: not Claude-induced  ({'cgroup unit: ' + unit_label(cg) if LINUX else 'app: ' + s.app_label(pid, start, comm)})")
             print(f"    {short(' '.join(proc_argv(pid)), 160)}")
             continue
         acct, cpid, escaped = o
@@ -1051,7 +1141,7 @@ def cmd_who(a):
         tasks.bootstrap([cpid])
         title, _ = session_title(acct, cpid, tasks, names, TranscriptTitles())
         cn = names.cmd(acct, cpid, lab)
-        started = time.time() - (float(read("/proc/uptime").split()[0]) - start / TICK)
+        started = started_epoch(start)
         print(f"{pid} {comm}: {title}  ({acct}, session pid {cpid} {'alive' if is_claude(cpid) else 'ended'})"
               f"{'  (not in its own cgroup yet)' if escaped else ''}")
         print(f"    session : {sf.get('name', '?')}  {sf.get('sessionId', '')}  cwd {sf.get('cwd', '?')}")
@@ -1134,11 +1224,10 @@ def cmd_report(a):
 def cmd_adopt(_):
     live = live_sessions()
     tagged = {}  # claude pid -> processes carrying its CLAUDE_PID (detached ones included)
-    for d in os.listdir("/proc"):
-        if d.isdigit():
-            cp = proc_env(int(d)).get("CLAUDE_PID", "")
-            if cp.isdigit() and int(cp) in live and not scope_cgroup(int(d)):
-                tagged.setdefault(int(cp), []).append(int(d))
+    for pid in all_procs():
+        cp = proc_env(pid).get("CLAUDE_PID", "")
+        if cp.isdigit() and int(cp) in live and not scope_cgroup(pid):
+            tagged.setdefault(int(cp), []).append(pid)
     for pid, acct in sorted(live.items()):
         res = move_to_scope(pid, acct)
         rest = [p for p in tagged.get(pid, []) if not scope_cgroup(p)]

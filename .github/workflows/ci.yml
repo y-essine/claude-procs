@@ -2,14 +2,30 @@ name: ci
 on: [push, pull_request]
 jobs:
   test:
-    runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python: ["3.10", "3.12", "3.13"]
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.9", "3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: ${{ matrix.python }}
       - run: uvx ruff check src tests
       - run: uvx --python ${{ matrix.python }} --with pytest pytest -q --import-mode=importlib -o pythonpath=src
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: plugin manifest is valid JSON with the reserved-name rule respected
+        run: |
+          python3 -c "import json; p=json.load(open('.claude-plugin/plugin.json')); m=json.load(open('.claude-plugin/marketplace.json')); assert not p['name'].startswith('claude-'); assert m['plugins'][0]['name']==p['name']"
+      - name: launcher runs from the checkout
+        run: ./bin/claude-procs --version
+  npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: cd npm && npm pack && npx --yes ./claude-procs-*.tgz --version

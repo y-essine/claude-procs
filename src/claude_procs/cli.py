@@ -1,6 +1,7 @@
 """claude-procs command line."""
 
 import argparse
+import os
 import sys
 
 from . import __version__
@@ -52,19 +53,26 @@ def main(argv=None):
     sp.add_parser("adopt", help="move already-running claude sessions into their own cgroup")
     d = sp.add_parser("daemon", help="the sampler (run by the systemd user unit)")
     d.add_argument("-i", "--interval", type=float, default=None)
-    sp.add_parser("hook", help="Claude Code hook entry point (reads the hook JSON on stdin)")
+    hk = sp.add_parser("hook", help="Claude Code hook entry point (reads the hook JSON on stdin)")
+    hk.add_argument("--ensure-daemon", action="store_true", help="start the sampler if it is not running (plugin mode)")
+    sl = sp.add_parser("statusline", help="a segment for Claude Code's status line: this session's CPU and memory")
+    sl.add_argument("--label", default="⚙ ", help="text before the numbers (default '⚙ ')")
+    sl.add_argument("--no-color", action="store_true")
 
     a = ap.parse_args(argv)
 
     if a.cmd == "hook":  # hot path: keep imports minimal
         from .core import cmd_hook
         return cmd_hook(a)
+    if a.cmd == "statusline":
+        from .core import cmd_statusline
+        return cmd_statusline(a)
     if a.cmd in (None, "ui"):
         if not sys.stdout.isatty():
             from .core import cmd_top
             return cmd_top(argparse.Namespace(interval=2, once=True, all=False))
         from .tui import main as tui
-        return tui(demo=a.demo, interval=a.interval, start_tab=a.tab)
+        return tui(demo=a.demo, interval=a.interval, start_tab=a.tab, tour=a.demo and bool(os.environ.get("CLAUDE_PROCS_TOUR")))
     from . import core, install
     if a.cmd == "daemon" and a.interval is None:
         a.interval = core.CONFIG["interval"]

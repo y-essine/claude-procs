@@ -1,0 +1,10 @@
+#!/bin/sh
+# claude-procs straight from this checkout (the Claude Code plugin uses it): pure-stdlib Python, nothing to install.
+here=$(cd "$(dirname "$0")/.." && pwd)
+for py in python3 python; do
+  if command -v "$py" >/dev/null 2>&1 && "$py" -c 'import sys; sys.exit(sys.version_info < (3, 9))' 2>/dev/null; then
+    PYTHONPATH="$here/src${PYTHONPATH:+:$PYTHONPATH}" exec "$py" -m claude_procs "$@"
+  fi
+done
+echo "claude-procs: needs Python 3.9 or newer (python3)" >&2
+exit 1

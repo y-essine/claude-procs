@@ -1,0 +1,18 @@
+{
+  "name": "claude-procs",
+  "version": "0.1.0",
+  "description": "See which Claude Code session and task is using your CPU and RAM (Linux, macOS). Live /status-style terminal view.",
+  "keywords": ["claude", "claude-code", "cpu", "memory", "processes", "monitoring", "cgroups", "htop", "tui"],
+  "homepage": "https://github.com/y-essine/claude-procs",
+  "repository": { "type": "git", "url": "git+https://github.com/y-essine/claude-procs.git" },
+  "bugs": "https://github.com/y-essine/claude-procs/issues",
+  "license": "MIT",
+  "author": "y-essine",
+  "os": ["linux", "darwin"],
+  "bin": { "claude-procs": "bin/claude-procs.js", "cprocs": "bin/claude-procs.js" },
+  "files": ["bin/", "python/", "README.md", "LICENSE"],
+  "scripts": {
+    "prepack": "node -e \"const fs=require('fs');fs.rmSync('python',{recursive:true,force:true});fs.cpSync('../src/claude_procs','python/claude_procs',{recursive:true,filter:s=>!s.includes('__pycache__')});fs.copyFileSync('../README.md','README.md');fs.copyFileSync('../LICENSE','LICENSE')\""
+  },
+  "engines": { "node": ">=16" }
+}
