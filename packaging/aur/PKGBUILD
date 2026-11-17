@@ -11,7 +11,7 @@ makedepends=('python-build' 'python-installer' 'python-hatchling')
 checkdepends=('python-pytest')
 optdepends=('claude-code: task names (Haiku) and the hooks it runs')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('e3cd5d26cd4051bde61de830c88366cb86a5bb4840bb1d2eeef84fa51f8d2142')
 
 build() {
   cd "$pkgname-$pkgver"
