@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "claude-procs"
+dynamic = ["version"]
+description = "See which Claude Code session and task is using your CPU and RAM (Linux, cgroups, live TUI)"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "y-essine" }]
+keywords = ["claude", "claude-code", "cgroups", "systemd", "monitoring", "tui", "htop"]
+classifiers = [
+  "Environment :: Console :: Curses",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Topic :: System :: Monitoring",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/y-essine/claude-procs"
+Issues = "https://github.com/y-essine/claude-procs/issues"
+
+[project.scripts]
+claude-procs = "claude_procs.cli:main"
+cprocs = "claude_procs.cli:main"
+
+[tool.hatch.version]
+path = "src/claude_procs/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/claude_procs"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP"]
+ignore = ["E501", "B008", "UP031"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
